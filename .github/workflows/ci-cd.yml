@@ -1,0 +1,201 @@
+name: Dify CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Validate docker-compose
+        run: docker-compose config
+
+      - name: Validate Terraform
+        if: github.event_name != 'pull_request'
+        working-directory: ./infrastructure/aws/terraform
+        run: |
+          terraform init -backend=false
+          terraform validate
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Create .env file
+        run: cp .env.template .env
+
+      - name: Start services for testing
+        run: |
+          mkdir -p logs/nginx backups/db storage
+          docker-compose up -d postgres redis weaviate
+          sleep 10  # Wait for services to start
+
+      - name: Run tests
+        run: |
+          # Add your test commands here
+          echo "Running tests..."
+          # Example: docker-compose run --rm api pytest
+
+      - name: Cleanup
+        run: docker-compose down -v
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name != 'pull_request'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Set environment variables
+        id: vars
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "ENV=${{ github.event.inputs.environment }}" >> $GITHUB_ENV
+          elif [ "${{ github.ref }}" == "refs/heads/main" ]; then
+            echo "ENV=prod" >> $GITHUB_ENV
+          else
+            echo "ENV=dev" >> $GITHUB_ENV
+          fi
+          echo "TIMESTAMP=$(date +%Y%m%d%H%M%S)" >> $GITHUB_ENV
+          echo "SHA_SHORT=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+
+      - name: Build and push API image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile.api  # You would need to create this
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/dify-api:${{ env.ENV }}-${{ env.TIMESTAMP }}-${{ env.SHA_SHORT }}
+            ${{ steps.login-ecr.outputs.registry }}/dify-api:${{ env.ENV }}-latest
+
+      - name: Build and push Web image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile.web  # You would need to create this
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/dify-web:${{ env.ENV }}-${{ env.TIMESTAMP }}-${{ env.SHA_SHORT }}
+            ${{ steps.login-ecr.outputs.registry }}/dify-web:${{ env.ENV }}-latest
+
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name != 'pull_request'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set environment variables
+        id: vars
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "ENV=${{ github.event.inputs.environment }}" >> $GITHUB_ENV
+          elif [ "${{ github.ref }}" == "refs/heads/main" ]; then
+            echo "ENV=prod" >> $GITHUB_ENV
+          else
+            echo "ENV=dev" >> $GITHUB_ENV
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v1
+        with:
+          terraform_version: 1.5.0
+
+      - name: Terraform Init
+        working-directory: ./infrastructure/aws/terraform
+        run: terraform init
+
+      - name: Create terraform.tfvars
+        working-directory: ./infrastructure/aws/terraform
+        run: |
+          cat > terraform.tfvars << EOF
+          aws_region = "${{ secrets.AWS_REGION }}"
+          project_name = "dify-workflow"
+          environment = "${{ env.ENV }}"
+          db_password = "${{ secrets.DB_PASSWORD }}"
+          EOF
+
+      - name: Terraform Plan
+        working-directory: ./infrastructure/aws/terraform
+        run: terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        working-directory: ./infrastructure/aws/terraform
+        run: terraform apply -auto-approve tfplan
+
+      - name: Update ECS Services
+        run: |
+          aws ecs update-service --cluster dify-workflow-cluster-${{ env.ENV }} --service dify-api-service --force-new-deployment
+          aws ecs update-service --cluster dify-workflow-cluster-${{ env.ENV }} --service dify-web-service --force-new-deployment
+
+  notify:
+    name: Notify
+    runs-on: ubuntu-latest
+    needs: [deploy]
+    if: always()
+    steps:
+      - name: Notify success
+        if: ${{ needs.deploy.result == 'success' }}
+        run: |
+          echo "Deployment successful!"
+          # Add notification logic here (e.g., Slack, email)
+
+      - name: Notify failure
+        if: ${{ needs.deploy.result != 'success' }}
+        run: |
+          echo "Deployment failed!"
+          # Add notification logic here (e.g., Slack, email)

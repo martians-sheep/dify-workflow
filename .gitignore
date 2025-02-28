@@ -1,0 +1,65 @@
+# Dify Workflow .gitignore
+
+# Environment variables
+.env
+
+# Terraform
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.backup
+terraform.tfvars
+*.tfplan
+
+# Data directories
+storage/
+backups/
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# IDE files
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# Dependency directories
+node_modules/
+vendor/
+
+# Compiled files
+*.class
+*.o
+*.pyc
+__pycache__/
+*.so
+*.dylib
+*.dll
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# SSL certificates
+*.pem
+*.key
+*.crt
+*.cer
+*.der
+*.p12
+*.pfx
+
+# Secrets
+*.secret
+*.secrets
+secrets.yml
+secrets.yaml

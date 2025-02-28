@@ -1,0 +1,38 @@
+# Dify AWS Infrastructure Configuration
+# Copy this file to terraform.tfvars and fill in your values
+
+# AWS Region
+aws_region = "us-west-2"
+
+# Project Information
+project_name = "dify-workflow"
+environment  = "dev"  # dev, staging, or prod
+
+# Network Configuration
+vpc_cidr             = "10.0.0.0/16"
+public_subnet_cidrs  = ["10.0.1.0/24", "10.0.2.0/24"]
+private_subnet_cidrs = ["10.0.3.0/24", "10.0.4.0/24"]
+availability_zones   = ["us-west-2a", "us-west-2b"]
+
+# Database Configuration
+db_instance_class     = "db.t3.medium"
+db_allocated_storage  = 20
+db_name               = "dify"
+db_username           = "dify"
+db_password           = "CHANGE_ME_TO_SECURE_PASSWORD"  # Change this to a secure password
+
+# Redis Configuration
+redis_node_type = "cache.t3.small"
+
+# ECS Configuration
+ecs_task_cpu    = 1024
+ecs_task_memory = 2048
+api_image       = "langgenius/dify-api:latest"
+web_image       = "langgenius/dify-web:latest"
+
+# Domain Configuration
+domain_name           = "your-dify-domain.com"  # Change this to your domain
+create_route53_records = false  # Set to true if you want to create Route53 records
+
+# Backup Configuration
+backup_retention_days = 7
